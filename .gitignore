@@ -1,0 +1,15 @@
+.DS_Store
+.Rproj.user/
+.Rhistory
+.Rapp.history
+.RData
+/*_cache/
+/cache/
+*.utf8.md
+*.knit.md
+.Rproj.user
+*.csv
+Replication-Braginsky-2015/data/
+Replication-McCauley-Christiansen-2019/data/
+papers/
+cdi-grammar-master/

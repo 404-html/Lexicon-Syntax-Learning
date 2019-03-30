@@ -1,0 +1,549 @@
+---
+title: "FinalProject_Draft"
+subtitle: "Eva Portelance"
+date: '`r Sys.time()`'
+urlcolor: blue 
+output: html_document 
+#output: pdf_document 
+---
+
+```{r message=FALSE, results='hide'}
+library("knitr") 
+library("feather")
+library("hashmap") # to implement hash tables
+library("janitor")  
+library("broom")  
+library("lme4")
+library("pwr")        
+library("modelr") 
+library("tidyverse")
+library("wordbankr") # API for wordbank data
+
+# Set theme
+theme_set(
+  theme_classic() + 
+    theme(text = element_text(size = 10)) 
+)
+
+```
+
+
+## Introduction
+
+
+## Data
+
+The following code block collects all the instrument data available through wordbankr for a set of selected languages and forms into single data frame where each observation is the answer (value) to an item (item_id) on a given completed form (data_id), in a given language (language), in addition to the linguistic information about this item (eg. type, definition, category, etc.). This information is then saved to a csv for future use.
+
+```{r data_instrument, eval=FALSE}
+# Get information about forms and there availability by languages
+df.administrations = get_administration_data()
+df.instruments = get_instruments()
+
+# The set of languages I found to have WG and WS forms with annotated item types 
+# including "word" and "complexity".
+languages  = c("English (American)", "Danish", "French (French)", 
+               "French (Quebecois)","Hebrew", "Kiswahili", "Spanish (Mexican)",
+               "Slovak", "Norwegian", "Kigiriama")
+
+# A helper function to collect instrument data from multiple languages into a 
+# single data.frame 
+get_multiling_instrument_data <- function(languages, form){
+  df.multiling_instrument_data = data.frame()
+  for(lang in languages){
+    df.lang_instrument_data = get_instrument_data(language = lang, 
+                                                  form = form, 
+                                                  iteminfo = TRUE ) %>%
+      mutate(language = lang) %>% 
+      select(language, everything())
+      df.multiling_instrument_data = rbind(df.multiling_instrument_data,
+                                           df.lang_instrument_data)
+  }
+  return(df.multiling_instrument_data)
+}
+
+# Collect all instrument data for selected languages for both WG and WS forms
+df.WG_multiling_instrument_data = get_multiling_instrument_data(languages, "WG")
+df.WS_multiling_instrument_data = get_multiling_instrument_data(languages, "WS")
+
+# I used the following to make sure selected languages where annotated for at least
+# "word" and "complexity" in variable type
+#df.WS_multiling_instrument_data %>% distinct(language, type)
+
+
+# Write to csv for future use
+write.csv(df.WG_multiling_instrument_data, 
+          file = "df_WG_multiling_instrument_data.csv",row.names=FALSE)
+write.csv(df.WS_multiling_instrument_data, 
+          file = "df_WS_multiling_instrument_data.csv",row.names=FALSE)
+
+```
+
+```{r data_download}
+
+# Load in data from csv (to avoid downloading from remote all the data)
+df.WG_multiling_instrument_data <- 
+  read.csv(file="df_WG_multiling_instrument_data.csv", header=TRUE, sep=",")
+df.WS_multiling_instrument_data <- 
+  read.csv(file="df_WS_multiling_instrument_data.csv", header=TRUE, sep=",")
+
+languages = df.WG_multiling_instrument_data %>% distinct(language) %>% .$language
+
+# View head of data frame to see all variables
+print(head(df.WS_multiling_instrument_data))
+```
+
+```{r data_administration, eval=FALSE}
+# The following block creates hashmaps (data_id, age) from the administration data for the selected languages and forms. these hashmaps can be used via a helper function add_age(hashmap, data.frame) to populate an age column variable.
+
+# This is a helper function similar to the one used for collecting instrument data which merges the administration data for multiple languages of a given form into one central data frame.
+get_multiling_administration_data <- function(languages, form){
+    df.multiling_administration_data = data.frame()
+  for(lang in languages){
+    df.lang_administration_data = get_administration_data(language = lang, 
+                                                  form = form ) %>%
+      mutate(language = lang) %>% 
+      select(language, everything())
+      df.multiling_administration_data = rbind(df.multiling_administration_data,
+                                           df.lang_administration_data)
+  }
+  return(df.multiling_administration_data)
+}
+
+
+# Collect the administration information for the chosen languages and forms
+df.WG_multiling_administration_data = get_multiling_administration_data(languages, "WG")
+df.WS_multiling_administration_data = get_multiling_administration_data(languages, "WS")
+
+write.csv(df.WG_multiling_administration_data, 
+          file = "df_WG_multiling_administration_data.csv",row.names=FALSE)
+write.csv(df.WS_multiling_administration_data, 
+          file = "df_WS_multiling_administration_data.csv",row.names=FALSE)
+```
+```{r age}
+
+df.WG_multiling_administration_data <- 
+  read.csv(file="df_WG_multiling_administration_data.csv", header=TRUE, sep=",")
+df.WS_multiling_administration_data <- 
+  read.csv(file="df_WS_multiling_administration_data.csv", header=TRUE, sep=",")
+
+# The number of unique data_ids in the administration data is lower than in the
+# instrument data ... this is weird. 
+#df.WG_multiling_administration_data %>% distinct(data_id) %>% count()
+#df.WG_multiling_instrument_data %>% distinct(data_id) %>% count()
+#df.WS_multiling_administration_data %>% distinct(data_id) %>% count()
+#df.WS_multiling_instrument_data %>% distinct(data_id) %>% count()
+
+# I will attempt to match as many ages as I can and for the missing data_ids i will
+# mark the age as NA
+
+# Create hashmap with data_ids as keys and age as values. Given the amount of 
+# observations, hashmap present a much more efficient alternative for searching for
+# a given data_id's age than a data frame.
+hm.WG_multiling_age <- hashmap(keys= df.WG_multiling_administration_data$data_id, values =  df.WG_multiling_administration_data$age)
+
+hm.WS_multiling_age <- hashmap(keys= df.WS_multiling_administration_data$data_id, values = df.WS_multiling_administration_data$age)
+
+# A helper function which adds the age information to a data frame given the right 
+# hashmap and data frame
+add_age <- function(hm.age, df.data){
+  df.result = df.data %>% mutate(age = hm.age[[data_id]])
+  return (df.result)
+}
+
+```
+
+# Grammatical Categories
+
+### Data Wrangling
+
+The following code block calculates the vocabulary size as well as the total proportion of acquired nouns, predicates, and function words for every data_id (child/form). It produces two separate data frames based on our definition of "acquired words": the first requiring word production and the second requiring word comprehension (a super set of the first). These data frames will be used to plot and model the relationship between vocabulary size and the proportion of different acquired lexical categories.
+```{r lex_cat}
+
+# There are 5 possible values for lexical_category in this data: 
+# [NA, other, nouns, predicates, function_words]
+df.WG_multiling_instrument_data %>% distinct(lexical_category)
+
+# Given that the Bates et al. 1994 study and Braginsky et al. 2015 replication
+# only looked at three of these categories, I will only look at data points which 
+# match lexical_category in [nouns, predicates, function_words]
+df.WG_multiling_lexcat_data <- df.WG_multiling_instrument_data %>% 
+  filter(lexical_category %in% c("nouns","predicates","function_words"))
+
+# There are 10,272 unique data_ids
+#df.WG_multiling_lexcat_data %>% distinct(data_id)
+
+# We need to produce a data frame with 10,272 observations with their respective 
+# vocabulary size, and proportion of nouns, predicates and function_words. I will 
+# produce two data frames, one where counts are based on word production (value =
+# produces) and the other where counts are based on word comprehension (value = 
+# understands | produces)
+
+# This first data frame counts acquired words as 'produces'
+df.WG_multiling_lexcat_produces <- df.WG_multiling_lexcat_data %>% 
+  group_by(data_id) %>% 
+# We will use this to normalize the vocab_size
+  mutate(vocab_max = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id, value) %>% 
+# These are temporary counts which will make sense once we spread the data 
+# according to lexical_category and value
+  mutate(temp_vocab_size = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id,lexical_category,value) %>% 
+  mutate(temp_score = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id,lexical_category) %>% 
+# We will use this to normalize the the proportional counts for each
+# lexical category
+  mutate(max_score = n()) %>%
+  ungroup() %>% 
+  select(language, data_id, lexical_category, 
+         value, vocab_max, temp_vocab_size, temp_score, max_score) %>% 
+  distinct(data_id, lexical_category, value, .keep_all = TRUE) %>% 
+# We combine lexical_category and value in order to properly spread the scores
+# accross lexical_category and value 
+  mutate(lexical_category.value = paste(lexical_category, value, sep = ".")) %>%
+# normalize scores
+  mutate(norm_score = temp_score/max_score) %>% 
+# we only want to count produced words as part of the vocab, so other value
+# types are set to 0 for later sum
+  mutate(temp_vocab_size = ifelse(value == "produces", temp_vocab_size, 0)) %>% 
+  select(language,data_id, vocab_max, temp_vocab_size, lexical_category.value, norm_score) %>% 
+  spread(lexical_category.value, norm_score, fill = 0) %>% 
+# get rid of NAs
+  mutate(temp_vocab_size = ifelse(is.na(temp_vocab_size), 0, temp_vocab_size)) %>% 
+  group_by(data_id) %>% 
+# normalize vocabulary size
+  mutate(vocab_size = sum(temp_vocab_size)/vocab_max) %>% 
+   ungroup() %>% 
+  mutate(nouns = ifelse(is.na(nouns.produces), 0, nouns.produces), 
+         predicates = ifelse(is.na(predicates.produces), 0, predicates.produces),
+         function_words = 
+           ifelse(is.na(function_words.produces), 0, function_words.produces)) %>% 
+  select(language, data_id, vocab_size, nouns, predicates, function_words) %>% 
+# We still have null duplicates of observations (where all numeric variables = 0) 
+# and we need to get rid of them. We needed to keep them earlier to make sure not to
+# filter out observations where no words are yet acquired (vocab_size = 0)
+  arrange(data_id, desc(nouns), desc(predicates), desc(function_words)) %>% 
+  distinct(data_id, .keep_all = TRUE) %>% 
+# add the ages of each data_id
+  add_age(hm.WG_multiling_age, .)
+
+print(head(df.WG_multiling_lexcat_produces))
+
+# This second data frame counts acquired words as 'understands' (understands + produces)
+df.WG_multiling_lexcat_understands <- df.WG_multiling_lexcat_data %>% 
+# change all "produces" values to "understands", since production implies comprehension
+  mutate(value_combined = 
+           ifelse((value %in% c("produces","understands")), "understands", NA)) %>%
+  group_by(data_id) %>% 
+# We will use this to normalize the vocab_size
+  mutate(vocab_max = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id, value_combined) %>%
+# These are temporary counts which will make sense once we spread the data 
+# according to lexical_category and value_combined
+  mutate(temp_vocab_size = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id,lexical_category,value_combined) %>% 
+  mutate(temp_score = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id,lexical_category) %>% 
+# We will use this to normalize the the proportional counts for each
+# lexical category
+  mutate(max_score = n()) %>%
+  ungroup() %>% 
+  select(language, data_id, lexical_category, 
+         value_combined, vocab_max, temp_vocab_size, temp_score, max_score) %>% 
+  distinct(data_id, lexical_category, value_combined, .keep_all = TRUE) %>% 
+# We combine lexical_category and value_combined in order to properly 
+# spread the scores accross lexical_category and value_combined 
+  mutate(lexical_category.value_combined = 
+           paste(lexical_category, value_combined, sep = ".")) %>%
+# normalize scores
+  mutate(norm_score = temp_score/max_score) %>% 
+# get rid of NAs
+  mutate(temp_vocab_size = ifelse(is.na(value_combined),0 , temp_vocab_size)) %>% 
+  select(language,data_id, vocab_max, temp_vocab_size, 
+         lexical_category.value_combined, norm_score) %>% 
+  spread(lexical_category.value_combined, norm_score, fill = 0) %>% 
+  mutate(temp_vocab_size = ifelse(is.na(temp_vocab_size), 0, temp_vocab_size)) %>% 
+  group_by(data_id) %>% 
+# normalize vocabulary size
+  mutate(vocab_size = sum(temp_vocab_size)/vocab_max) %>% 
+   ungroup() %>% 
+  mutate(nouns = 
+           ifelse(is.na(nouns.understands), 0, nouns.understands), 
+         predicates = 
+           ifelse(is.na(predicates.understands), 0, predicates.understands),
+         function_words = 
+           ifelse(is.na(function_words.understands), 0, function_words.understands)) %>% 
+  select(language, data_id, vocab_size, nouns, predicates, function_words) %>% 
+# We still have null duplicates of observations (where all numeric variables = 0) 
+# and we need to get rid of them. We needed to keep them earlier to make sure not to
+# filter out observations where no words are yet acquired (vocab_size = 0)
+  arrange(data_id, desc(nouns), desc(predicates), desc(function_words)) %>% 
+  distinct(data_id, .keep_all = TRUE) %>% 
+# add the ages of each data_id
+  add_age(hm.WG_multiling_age, .)
+
+print(head(df.WG_multiling_lexcat_understands))
+
+
+
+```
+
+
+## Significance Testing
+
+```{r test1}
+
+model_comparison <- function(df, lang, y, x){
+  df$y <- eval(substitute(y), df)
+  df$x <- eval(substitute(x), df)
+  df.lang <- df %>% 
+    filter(language==lang)
+  fit.linear= lm(formula = y ~ 0 + x, data= df.lang)
+  
+  fit.quadratic = lm(formula = y ~ 0 + x + I(x^2), data =df.lang)
+  
+  fit.nonlinear = lm(formula = y ~ 0 + x + I(x^2) + I(x^3), data = df.lang)
+  print(c(lang, substitute(y)))
+  print(anova(fit.linear, fit.quadratic, fit.nonlinear))
+}
+
+for(lang in languages){
+  model_comparison(df.WG_multiling_lexcat_produces, lang, nouns, vocab_size)
+  model_comparison(df.WG_multiling_lexcat_produces, lang, predicates, vocab_size)
+  model_comparison(df.WG_multiling_lexcat_produces, lang, function_words, vocab_size)
+}
+
+
+```
+
+```{r model1}
+# no pooling between languages fit model to each lexical category
+# For Production data ("produces")
+df.multiling_lexcat_produces_no_pooling =  df.WG_multiling_lexcat_produces %>% 
+  group_by(language) %>% 
+# fit function_words
+  nest(vocab_size, function_words) %>% 
+  mutate(fit = map(data, ~ lm(function_words ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(function_words_fitted = fitted) %>% 
+  cbind(df.WG_multiling_lexcat_produces, .)
+# fit predicates
+df.multiling_lexcat_produces_no_pooling =  df.WG_multiling_lexcat_produces %>% 
+  group_by(language) %>% 
+  nest(vocab_size, predicates) %>% 
+  mutate(fit = map(data, ~ lm(predicates ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(predicates_fitted = fitted) %>% 
+  cbind(df.multiling_lexcat_produces_no_pooling, .)
+# fit nouns
+df.multiling_lexcat_produces_no_pooling =  df.WG_multiling_lexcat_produces %>% 
+  group_by(language) %>% 
+  nest(vocab_size, nouns) %>% 
+  mutate(fit = map(data, ~ lm(nouns ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(nouns_fitted = fitted) %>% 
+  cbind(df.multiling_lexcat_produces_no_pooling, .)
+
+
+# For Comprehension data ("understands")
+df.multiling_lexcat_understands_no_pooling =  df.WG_multiling_lexcat_understands %>% 
+  group_by(language) %>% 
+# fit function_words
+  nest(vocab_size, function_words) %>% 
+  mutate(fit = map(data, ~ lm(function_words ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(function_words_fitted = fitted) %>% 
+  cbind(df.WG_multiling_lexcat_understands, .)
+# fit predicates
+df.multiling_lexcat_understands_no_pooling =  df.WG_multiling_lexcat_understands %>% 
+  group_by(language) %>% 
+  nest(vocab_size, predicates) %>% 
+  mutate(fit = map(data, ~ lm(predicates ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(predicates_fitted = fitted) %>% 
+  cbind(df.multiling_lexcat_understands_no_pooling, .)
+# fit nouns
+df.multiling_lexcat_understands_no_pooling =  df.WG_multiling_lexcat_understands %>% 
+  group_by(language) %>% 
+  nest(vocab_size, nouns) %>% 
+  mutate(fit = map(data, ~ lm(nouns ~ 0 + vocab_size + I(vocab_size^2) + I(vocab_size^3), data = .)),
+         augment = map(fit, augment)) %>% 
+  unnest(augment) %>% 
+  clean_names() %>% 
+  select(nouns_fitted = fitted) %>% 
+  cbind(df.multiling_lexcat_understands_no_pooling, .)
+
+```
+
+```{r results1}
+ggplot(data = df.multiling_lexcat_produces_no_pooling,
+       mapping = aes(x = vocab_size,
+                     group= language)) +
+  geom_point(aes(y=nouns), size= 0.3, color = "blue", alpha= 0.2) +
+  geom_point(aes(y=predicates),size= 0.3, color = "green", alpha= 0.2) +
+  geom_point(aes(y=function_words),size= 0.3, color = "orange", alpha= 0.2) +
+  geom_line(aes(y=nouns_fitted), color="blue") +
+  geom_line(aes(y=predicates_fitted), color="green") +
+  geom_line(aes(y=function_words_fitted), color="orange") +
+  facet_wrap(vars(language)) +
+  ylab("proportion of category") +
+  xlab("production vocabulary size")
+
+
+#CC6666", "#9999CC", "#66CC99"
+ggplot(data = df.multiling_lexcat_understands_no_pooling,
+       mapping = aes(x = vocab_size,
+                     group= language)) +
+  geom_point(aes(y=nouns), size= 0.3, color =  "#7CB637", alpha= 0.2) +
+  geom_point(aes(y=predicates),size= 0.3, color = "#4381C1", alpha= 0.2) +
+  geom_point(aes(y=function_words),size= 0.3, color = "#E6AB02", alpha= 0.2) +
+  geom_line(aes(y=nouns_fitted), size= 1, color="#7CB637") +
+  geom_line(aes(y=predicates_fitted), size=1, color="#4381C1") +
+  geom_line(aes(y=function_words_fitted),size=1, color="#E6AB02") +
+  facet_wrap(vars(language)) +
+  ylab("proportion of category") +
+  xlab("production vocabulary size")
+```
+
+
+## Complexity
+
+### Data Wrangling
+
+The following code block calculates the vocabulary score and complexity score for each data_id (child/form) and collects them in a data frame (either the raw score or the normalized score). This data is to be used to plot and model the correlation between vocabulary size ('word' score) and complexity ('complexity' score).
+```{r scores}
+# There are many distinct types anotated for in this data, but I will assume that:
+# only items of type = "word" go into calculating the vocabulary score;
+# only items of type = "complexity" go into calculating the complexity score;
+df.WS_multiling_instrument_data %>% distinct(type)
+
+# Filter to keep only items which are part of either the complexity
+df.WS_multiling_complexity_data <- df.WS_multiling_instrument_data %>%
+  filter(type=="word" | type == "complexity")
+
+
+
+# I have to exclude the data from Slovak and Hebrew because they use a 1-4 choice 
+# system as there value for some complexity items and I have no way of knowing which 
+# of the 4 variants corresponds to an acquired complexity item.
+
+#df.WS_multiling_complexity_data %>% distinct(value)
+#test <- df.WS_multiling_complexity_data %>% filter(value == 1) %>% distinct(language)
+
+df.WS_multiling_complexity_data <- df.WS_multiling_complexity_data %>%
+  filter(language !="Hebrew" & language != "Slovak")
+
+# value can have any of the following values = [produces, NA, "", complex, simple]
+# I consider something acquired for the purpose of calculating a vocabulary or 
+# complexity score if value is in [produces,complex]
+#df.WS_multiling_complexity_data %>% ungroup() %>% distinct(type,value)
+
+
+# There are 21,640 distinct data_ids in this data frame which means I want to end 
+# up with a data frame containing 21,640 observations with both a complexity score 
+# and a vocabulary score
+
+# The following chain computes these scores
+df.WS_multiling_complexity_data <- df.WS_multiling_complexity_data %>% 
+  group_by(data_id,type,value) %>% 
+  mutate(temp_score = n()) %>% 
+  ungroup() %>% 
+  group_by(data_id,type) %>% 
+# max score is the theoretical max score on a given form for either vocabulary or
+# complexity. Given that these values vary across languages, we can use this to 
+# normalize scores
+  mutate(max_score = n()) %>%
+  ungroup() %>% 
+  select(language, data_id, type, value, temp_score, max_score) %>% 
+# remove duplicate information
+  distinct(data_id, type, value, .keep_all = TRUE) %>% 
+# keep scores for produced/complex values and scores which are zero (temp_score ==
+# max_score if value==simple/NA/"" for all complexity or word items)
+  filter(value=="produces" | value == "complex" | temp_score == max_score) %>%
+# set score to zero if value is neither produces or complex
+  mutate(score = ifelse((is.na(value) | !(value=="produces" | value == "complex")), 0, temp_score)) %>%
+# calculate normalized scores
+  mutate(norm_score = score/max_score) %>%
+  select(language,data_id,type,score, max_score, norm_score) %>%
+  arrange(data_id, type) 
+
+print(head(df.WS_multiling_complexity_data))
+
+
+# The following data frames contain exactly one observation for each data_id with
+# either normalized or raw scores for both vocabulary and complexity. These will be 
+# used for plotting and models.
+df.WS_multiling_complexity_normalized_score <- df.WS_multiling_complexity_data %>% 
+  select(language, data_id, type, norm_score) %>% 
+  spread(type, norm_score, fill = 0) %>% 
+# add the ages of each data_id
+  add_age(hm.WS_multiling_age, .)
+
+print(head(df.WS_multiling_complexity_normalized_score))
+
+df.WS_multiling_complexity_score <- df.WS_multiling_complexity_data %>% 
+  select(language, data_id, type, score) %>% 
+  spread(type, score, fill = 0) %>% 
+# add the ages of each data_id
+  add_age(hm.WS_multiling_age, .)
+
+print(head(df.WS_multiling_complexity_score))
+
+```
+
+
+### Modelling
+
+### Significance Testing
+
+```{r test2}
+
+languages2 = df.WS_multiling_complexity_normalized_score %>% distinct(language) %>% .$language
+
+for(lang in languages2){
+  model_comparison(df.WS_multiling_complexity_normalized_score, lang, complexity, word)
+}
+```
+
+
+### Results
+
+```{r model2}
+ggplot(data = df.WS_multiling_complexity_normalized_score, aes(x=word, y=complexity, group=language)) +
+  geom_point(size= 0.3, color = "#4381C1", alpha= 0.3) +
+  geom_smooth(method = "lm", 
+              formula = y ~ 0 + x + I(x^2), size = 1,
+              color = "#E6AB02",
+              se = FALSE) +
+  facet_wrap(vars(language)) +
+  ylab("complexity score") +
+  xlab("vocabulary size")
+
+
+# French (French) has a max complexity score of only 16 items, which might explain 
+# the that most of the scores are zero. (n= 1330)
+# Kigiriama (n= 184) and Kiswahili (n=178) have much lower n than the other languages
+# and they also have a max score of only 22 items
+# The other languages max complexity scores range between  33 and 48
+#df.WS_multiling_complexity_data %>% filter(language != "French (French)" & language != "Kigiriama"  & language != "Kiswahili" &type=="complexity") %>%  distinct(max_score) 
+```
+
+# Discussion
+
+# References

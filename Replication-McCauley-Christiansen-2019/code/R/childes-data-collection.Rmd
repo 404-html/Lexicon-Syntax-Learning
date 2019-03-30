@@ -1,0 +1,81 @@
+---
+title: "childes-data-collection"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("childesr")
+library("tm")
+library("tidyverse")
+```
+
+## R Markdown
+
+```{r gettranscripts}
+df.transcripts <- get_transcripts()
+
+lang = "eng"
+# "Jilly", "Nai" and "Nic" were not available through childesr
+child_names_eng <- c("Abe", "Adam", "Alex", "Anne", "Aran", "Barbara", "Becky", "Carl", "Conor", "David", "Dominic", "Emily", "Emma", "Ethan", "Eve", "Gail", "Jimmy", "Joel", "John", "Lara", "Lily", "Liz", "Matt", "Michelle", "Naomi", "Nathaniel", "Nina", "Peter", "Roman", "Ross", "Ruth", "Sarah", "Seth", "Shem", "Thomas", "Tow", "Trevor", "Violet", "Warren", "Will")
+
+df.transcripts_eng <- df.transcripts %>% 
+  filter(target_child_name %in% child_names_eng & language == lang)
+
+```
+
+```{r}
+my_get_utterances = function(corpus_name, target_child_name) {
+  return(get_utterances(corpus = corpus_name, target_child = target_child_name))
+}
+
+df.utterances_eng_all = df.transcripts_eng %>% 
+  group_by(corpus_name) %>% 
+  distinct(target_child_name)  %>% 
+  pmap(my_get_utterances) %>% 
+  reduce(rbind)
+
+```
+
+```{r}
+df.utterances_eng_final = df.utterances_eng_all %>% 
+  ungroup() %>% 
+  group_by(target_child_name, corpus_name) %>% 
+  mutate(nb_utterances = n()) %>% 
+  ungroup() %>% 
+  group_by(target_child_name) %>% 
+  mutate(max_nb_bychildname = max(nb_utterances)) %>% 
+  filter(nb_utterances == max_nb_bychildname) %>% 
+  select(-max_nb_bychildname) %>% 
+  ungroup() 
+```
+
+
+```{r}
+df.CBL_strings_eng_final = df.utterances_eng_final %>%
+  mutate(gloss_cleaned = ifelse(is.na(stem) | stem =="", NA, removePunctuation(gloss))) %>% 
+  mutate(finalpunc = ifelse(grepl("question", type, fixed=TRUE),
+                            "?", ".")) %>% 
+  mutate(CBL_string = ifelse(!is.na(gloss_cleaned),
+                             paste("*", speaker_code, ": ", gloss_cleaned, " ", finalpunc, sep=""), NA)) 
+
+```
+
+
+```{r}  
+my_write_CBL_transcripts <- function(df){
+   child_name = df$target_child_name[1]
+   df %>%
+     filter(!is.na(CBL_string)) %>% 
+     select(CBL_string) %>% 
+   write.table(., file=paste("../../data/" lang, "/", child_name, ".capp", sep =""), quote = FALSE, col.names = FALSE, row.names = FALSE)
+   return(df)
+}
+
+df.CBL_strings_eng_final %>% 
+  select(target_child_name, CBL_string) %>% 
+  group_by(target_child_name) %>% 
+  do(my_write_CBL_transcripts(.))
+```
+
+
