@@ -1,0 +1,92 @@
+---
+title: "MC_model_result_eval"
+output: html_document
+---
+
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library("tools")
+library("ggplot2")
+library("tidyverse")
+
+theme_set(theme_classic())
+```
+
+Read in all result files for each child transcript and combine them into a single data.frame.
+```{r get_results}
+result_dir = "../../data/eng/prod_results"
+files = list.files(path=result_dir, pattern="*.csv", full.names=TRUE, recursive=FALSE)
+
+my_get_prod_results <- function(file){
+  df = read.csv(file)
+  #Extract child name from file name and add variable.
+  file_name = strsplit(file_path_sans_ext(file), "/")[[1]]
+  file_name = file_name[(length(file_name))]
+  child_name = strsplit(file_name,".prod_result", fixed=TRUE)[[1]]
+  
+  df = df %>% 
+    mutate(child_name = child_name)
+  return(df)
+}
+
+df.prod_results = files %>% map(my_get_prod_results) %>% reduce(rbind)
+
+```
+
+For each child calculate the average performance over all iterations of the model for each sentence length. Save the average performance score by sentence length for each child.
+```{r by_child}
+
+df.prod_results_bychild = df.prod_results %>% 
+  group_by(child_name, utterance_length) %>% 
+  mutate(mean_prod_score = mean(production_score)) %>% 
+  select(child_name, utterance_length, nb_utterances, mean_prod_score) %>% 
+  ungroup() %>% 
+  unique()
+
+
+```
+
+Calculate the models overall performance by sentence length. Add the total nb of sentences of each different sentence length together for all child transcripts. Add the average nb of (correctly) produced sentences by the model for all child transcripts. Calculate the overall production scores by sentence length.
+```{r by_lang}
+df.prod_results_bylang = df.prod_results_bychild %>% 
+  group_by(utterance_length) %>% 
+  mutate(total_nb_utterances = sum(nb_utterances)) %>% 
+  mutate(total_avg_produced = sum(nb_utterances*mean_prod_score)) %>% 
+  select(utterance_length, total_nb_utterances, total_avg_produced) %>% 
+  ungroup() %>% 
+  unique() %>% 
+  mutate(prod_score = total_avg_produced/total_nb_utterances)
+  
+```
+
+Plot the average production score by sentence length for each child transcript.
+```{r plot1}
+#Only take sentences with 16 words or less
+df.plot1 = df.prod_results_bychild %>% 
+  filter(utterance_length <= 16)
+
+ggplot(df.plot1, aes(x=utterance_length, y=mean_prod_score, color = child_name)) +
+  geom_point()+
+  ylab("Production score") +
+  xlab("Utterance length (nb words)")+
+  scale_y_continuous(limits = c(0.0, 1.0))+
+  scale_x_continuous(breaks = c(2,3,4,5,6,7,8,9,10,11,12,13,14,15,16))+
+  ggtitle("Production score for each child by utterance length")
+```
+
+Plot the overall production score by sentence length. The numbers are the different n for each sentence length.
+```{r plot2}
+#Only take sentences with 16 words or less
+df.plot2 = df.prod_results_bylang %>% 
+  filter(utterance_length <= 16)
+
+ggplot(df.plot2, aes(x=utterance_length, y=prod_score)) +
+  geom_point(color="blue", shape=19, size =2) +
+  geom_text(aes(label=total_nb_utterances),hjust=0, vjust=0) +
+  ylab("Production score") +
+  xlab("Utterance length (nb words)") +
+  scale_y_continuous(limits = c(0.0, 1.0))+
+  scale_x_continuous(breaks = c(2,3,4,5,6,7,8,9,10,11,12,13,14,15,16))+
+  ggtitle("Overall production score by utterance length with counts")
+```
