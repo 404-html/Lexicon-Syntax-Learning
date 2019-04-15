@@ -8,8 +8,7 @@
 *.utf8.md
 *.knit.md
 .Rproj.user
-*.csv
-Replication-Braginsky-2015/data/
-Replication-McCauley-Christiansen-2019/data/
+Replication-Braginsky-2015/data/*.csv
+*.h5
 papers/
 cdi-grammar-master/

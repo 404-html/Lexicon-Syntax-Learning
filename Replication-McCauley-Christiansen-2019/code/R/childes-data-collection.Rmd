@@ -19,7 +19,7 @@ lang = "eng"
 # "Jilly", "Nai" and "Nic" were not available through childesr
 child_names_eng <- c("Abe", "Adam", "Alex", "Anne", "Aran", "Barbara", "Becky", "Carl", "Conor", "David", "Dominic", "Emily", "Emma", "Ethan", "Eve", "Gail", "Jimmy", "Joel", "John", "Lara", "Lily", "Liz", "Matt", "Michelle", "Naomi", "Nathaniel", "Nina", "Peter", "Roman", "Ross", "Ruth", "Sarah", "Seth", "Shem", "Thomas", "Tow", "Trevor", "Violet", "Warren", "Will")
 
-df.transcripts_eng <- df.transcripts %>% 
+df.transcripts_eng <- df.transcripts %>%
   filter(target_child_name %in% child_names_eng & language == lang)
 
 ```
@@ -30,10 +30,10 @@ my_get_utterances = function(corpus_name, target_child_name) {
   return(get_utterances(corpus = corpus_name, target_child = target_child_name))
 }
 
-df.utterances_eng_all = df.transcripts_eng %>% 
-  group_by(corpus_name) %>% 
-  distinct(target_child_name)  %>% 
-  pmap(my_get_utterances) %>% 
+df.utterances_eng_all = df.transcripts_eng %>%
+  group_by(corpus_name) %>%
+  distinct(target_child_name)  %>%
+  pmap(my_get_utterances) %>%
   reduce(rbind)
 
 ```
@@ -41,26 +41,26 @@ df.utterances_eng_all = df.transcripts_eng %>%
 
 Given that there are multiple children with each name from different corpora, I need to only keep the one which the largest amount of tokens according to M & C's paper, which is equivalent to the one with the most utterances. So for each child name and for each different corpus, calculate the total number of utterances and filter to only keep the child for each name with the most utterances.
 ```{r, eval=FALSE}
-df.utterances_eng_final = df.utterances_eng_all %>% 
-  ungroup() %>% 
-  group_by(target_child_name, corpus_name) %>% 
-  mutate(nb_utterances = n()) %>% 
-  ungroup() %>% 
-  group_by(target_child_name) %>% 
-  mutate(max_nb_bychildname = max(nb_utterances)) %>% 
-  filter(nb_utterances == max_nb_bychildname) %>% 
-  select(-max_nb_bychildname) %>% 
-  ungroup() 
+df.utterances_eng_final = df.utterances_eng_all %>%
+  ungroup() %>%
+  group_by(target_child_name, corpus_name) %>%
+  mutate(nb_utterances = n()) %>%
+  ungroup() %>%
+  group_by(target_child_name) %>%
+  mutate(max_nb_bychildname = max(nb_utterances)) %>%
+  filter(nb_utterances == max_nb_bychildname) %>%
+  select(-max_nb_bychildname) %>%
+  ungroup()
 ```
 
 For each utterance, remove all punctuation including apostrophes, following M & C's data description, and add final punctuation since they kept it in their cleaned transcripts. I don't think their model actually cares about the final punctuation since they end up removing it when they process the sentences, but given that they had both '.' and '?' in their example transcript, I have added both of these depending on the sentence type. Finally, I add '*CHI: ' or the equivalent speaker code for each utterance to the beginning of the string to match the formatting used by M & C. Their model does string matching on the speaker code to determine if an utterance was produced by the target child or not.
 ```{r, eval=FALSE}
 df.CBL_strings_eng_final = df.utterances_eng_final %>%
-  mutate(gloss_cleaned = ifelse(is.na(stem) | stem =="", NA, removePunctuation(gloss))) %>% 
+  mutate(gloss_cleaned = ifelse(is.na(stem) | stem =="", NA, removePunctuation(gloss))) %>%
   mutate(finalpunc = ifelse(grepl("question", type, fixed=TRUE),
-                            "?", ".")) %>% 
+                            "?", ".")) %>%
   mutate(CBL_string = ifelse(!is.na(gloss_cleaned),
-                             paste("*", speaker_code, ": ", gloss_cleaned, " ", finalpunc, sep=""), NA)) 
+                             paste("*", speaker_code, ": ", gloss_cleaned, " ", finalpunc, sep=""), NA))
 
 ```
 
@@ -69,16 +69,14 @@ Write a separate file for each child transcript to be read in by M & C's model.
 my_write_CBL_transcripts <- function(df){
    child_name = df$target_child_name[1]
    df %>%
-     filter(!is.na(CBL_string)) %>% 
-     select(CBL_string) %>% 
-   write.table(., file=paste("../../data/" lang, "/", child_name, ".capp", sep =""), quote = FALSE, col.names = FALSE, row.names = FALSE)
+     filter(!is.na(CBL_string)) %>%
+     select(CBL_string) %>%
+   write.table(., file=paste("../../data/transcripts/" lang, "/", child_name, ".capp", sep =""), quote = FALSE, col.names = FALSE, row.names = FALSE)
    return(df)
 }
 
-df.CBL_strings_eng_final %>% 
-  select(target_child_name, CBL_string) %>% 
-  group_by(target_child_name) %>% 
+df.CBL_strings_eng_final %>%
+  select(target_child_name, CBL_string) %>%
+  group_by(target_child_name) %>%
   do(my_write_CBL_transcripts(.))
 ```
-
-
